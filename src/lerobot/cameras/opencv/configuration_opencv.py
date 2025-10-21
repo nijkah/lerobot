@@ -17,6 +17,8 @@ from pathlib import Path
 
 from ..configs import CameraConfig, ColorMode, Cv2Rotation
 
+__all__ = ["OpenCVCameraConfig", "ColorMode", "Cv2Rotation"]
+
 
 @CameraConfig.register_subclass("opencv")
 @dataclass
@@ -34,7 +36,7 @@ class OpenCVCameraConfig(CameraConfig):
     OpenCVCameraConfig(/dev/video4, 60, 640, 480)   # 640x480 @ 60FPS
 
     # Advanced configurations with FOURCC format
-    OpenCVCameraConfig(128422271347, 30, 640, 480, rotation=Cv2Rotation.ROTATE_90, fourcc="MJPG")     # With MJPG format
+    OpenCVCameraConfig(128422271347, 30, 640, 480, rotation=Cv2Rotation.ROTATE_90, fourcc="MJPG")     # With 90° rotation and MJPG format
     OpenCVCameraConfig(0, 30, 1280, 720, fourcc="YUYV")     # With YUYV format
     ```
 
@@ -51,7 +53,7 @@ class OpenCVCameraConfig(CameraConfig):
 
     Note:
         - Only 3-channel color output (RGB/BGR) is currently supported.
-        - FOURCC codes must be 4-character strings (e.g., "MJPG", "YUYV").
+        - FOURCC codes must be 4-character strings (e.g., "MJPG", "YUYV"). Some common FOUCC codes: https://learn.microsoft.com/en-us/windows/win32/medfound/video-fourccs#fourcc-constants
         - Setting FOURCC can help achieve higher frame rates on some cameras.
     """
 
@@ -61,7 +63,7 @@ class OpenCVCameraConfig(CameraConfig):
     warmup_s: int = 1
     fourcc: str | None = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if self.color_mode not in (ColorMode.RGB, ColorMode.BGR):
             raise ValueError(
                 f"`color_mode` is expected to be {ColorMode.RGB.value} or {ColorMode.BGR.value}, but {self.color_mode} is provided."
@@ -77,8 +79,7 @@ class OpenCVCameraConfig(CameraConfig):
                 f"`rotation` is expected to be in {(Cv2Rotation.NO_ROTATION, Cv2Rotation.ROTATE_90, Cv2Rotation.ROTATE_180, Cv2Rotation.ROTATE_270)}, but {self.rotation} is provided."
             )
 
-        if self.fourcc is not None:
-            if not isinstance(self.fourcc, str) or len(self.fourcc) != 4:
-                raise ValueError(
-                    f"`fourcc` must be a 4-character string (e.g., 'MJPG', 'YUYV'), but '{self.fourcc}' is provided."
-                )
+        if self.fourcc is not None and (not isinstance(self.fourcc, str) or len(self.fourcc) != 4):
+            raise ValueError(
+                f"`fourcc` must be a 4-character string (e.g., 'MJPG', 'YUYV'), but '{self.fourcc}' is provided."
+            )

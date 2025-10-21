@@ -708,7 +708,8 @@ class LeRobotDataset(torch.utils.data.Dataset):
             if not self._check_cached_episodes_sufficient():
                 raise FileNotFoundError("Cached dataset doesn't contain all requested episodes")
         except (AssertionError, FileNotFoundError, NotADirectoryError):
-            self.revision = get_safe_version(self.repo_id, self.revision)
+            if is_valid_version(self.revision):
+                self.revision = get_safe_version(self.repo_id, self.revision)
             self.download(download_videos)
             self.hf_dataset = self.load_hf_dataset()
 
@@ -842,7 +843,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
         # Get available episode indices from cached dataset
         available_episodes = {
             ep_idx.item() if isinstance(ep_idx, torch.Tensor) else ep_idx
-            for ep_idx in self.hf_dataset["episode_index"]
+            for ep_idx in self.hf_dataset.unique("episode_index")
         }
 
         # Determine requested episodes
