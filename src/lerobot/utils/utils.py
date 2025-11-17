@@ -27,7 +27,7 @@ from statistics import mean
 
 import numpy as np
 import torch
-from accelerate import Accelerator
+# from accelerate import Accelerator
 from datasets.utils.logging import disable_progress_bar, enable_progress_bar
 
 
@@ -132,7 +132,7 @@ def init_logging(
     display_pid: bool = False,
     console_level: str = "INFO",
     file_level: str = "DEBUG",
-    accelerator: Accelerator | None = None,
+    accelerator: None = None,
 ):
     """Initialize logging configuration for LeRobot.
 
