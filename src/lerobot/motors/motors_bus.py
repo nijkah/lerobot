@@ -438,6 +438,8 @@ class MotorsBus(abc.ABC):
             elif handshake:
                 self._handshake()
         except (FileNotFoundError, OSError, serial.SerialException) as e:
+            print('error type', e)
+            print('asdfasdfasdfasdf')
             raise ConnectionError(
                 f"\nCould not connect on port '{self.port}'. Make sure you are using the correct port."
                 "\nTry running `lerobot-find-port`\n"
