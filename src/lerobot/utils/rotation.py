@@ -268,3 +268,35 @@ class Rotation:
         )
 
         return Rotation(composed_quat)
+
+    # ---------------------------------------------------------------------
+    # Convenience constructors
+    # ---------------------------------------------------------------------
+    @classmethod
+    def from_euler_xyz(cls, angles, degrees: bool = False) -> "Rotation":
+        """Create rotation from intrinsic XYZ Euler angles.
+
+        This mirrors scipy Rotation.from_euler('xyz', angles, degrees=...). Only 'xyz'
+        intrinsic ordering is implemented because that's the only one we need for the
+        scripted Cartesian runner.
+
+        Args:
+            angles: Iterable of (roll_x, pitch_y, yaw_z)
+            degrees: If True, interpret input angles in degrees.
+        """
+        if len(angles) != 3:  # noqa: PLR2004
+            raise ValueError("from_euler_xyz requires exactly 3 angles (roll, pitch, yaw)")
+        rx, ry, rz = angles
+        if degrees:
+            rx, ry, rz = np.radians([rx, ry, rz])
+
+        cr, sr = np.cos(rx), np.sin(rx)
+        cp, sp = np.cos(ry), np.sin(ry)
+        cy, sy = np.cos(rz), np.sin(rz)
+
+        # Intrinsic XYZ: R = Rz * Ry * Rx
+        Rx = np.array([[1, 0, 0], [0, cr, -sr], [0, sr, cr]], dtype=float)
+        Ry = np.array([[cp, 0, sp], [0, 1, 0], [-sp, 0, cp]], dtype=float)
+        Rz = np.array([[cy, -sy, 0], [sy, cy, 0], [0, 0, 1]], dtype=float)
+        R = Rz @ Ry @ Rx
+        return cls.from_matrix(R)
