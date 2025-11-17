@@ -102,20 +102,38 @@ class KeyboardTeleop(Teleoperator):
         pass
 
     def _on_press(self, key):
-        if hasattr(key, "char"):
-            self.event_queue.put((key.char, True))
+        key_id = self._normalize_key(key)
+        if key_id is not None:
+            self.event_queue.put((key_id, True))
 
     def _on_release(self, key):
-        if hasattr(key, "char"):
-            self.event_queue.put((key.char, False))
+        key_id = self._normalize_key(key)
         if key == keyboard.Key.esc:
             logging.info("ESC pressed, disconnecting.")
             self.disconnect()
+            return
+
+        if key_id is not None:
+            self.event_queue.put((key_id, False))
 
     def _drain_pressed_keys(self):
         while not self.event_queue.empty():
-            key_char, is_pressed = self.event_queue.get_nowait()
-            self.current_pressed[key_char] = is_pressed
+            key_id, is_pressed = self.event_queue.get_nowait()
+            if is_pressed:
+                self.current_pressed[key_id] = True
+            else:
+                self.current_pressed.pop(key_id, None)
+
+    @staticmethod
+    def _normalize_key(key):
+        if key is None:
+            return None
+
+        char = getattr(key, "char", None)
+        if char is not None:
+            return char.lower()
+
+        return key
 
     def configure(self):
         pass
@@ -164,18 +182,26 @@ class KeyboardEndEffectorTeleop(KeyboardTeleop):
 
     @property
     def action_features(self) -> dict:
+        names = {
+            "delta_x": 0,
+            "delta_y": 1,
+            "delta_z": 2,
+            "delta_wx": 3,
+            "delta_wy": 4,
+            "delta_wz": 5,
+        }
+
         if self.config.use_gripper:
-            return {
-                "dtype": "float32",
-                "shape": (4,),
-                "names": {"delta_x": 0, "delta_y": 1, "delta_z": 2, "gripper": 3},
-            }
+            names["gripper"] = 6
+            shape = (7,)
         else:
-            return {
-                "dtype": "float32",
-                "shape": (3,),
-                "names": {"delta_x": 0, "delta_y": 1, "delta_z": 2},
-            }
+            shape = (6,)
+
+        return {
+            "dtype": "float32",
+            "shape": shape,
+            "names": names,
+        }
 
     def get_action(self) -> dict[str, Any]:
         if not self.is_connected:
@@ -187,43 +213,69 @@ class KeyboardEndEffectorTeleop(KeyboardTeleop):
         delta_x = 0.0
         delta_y = 0.0
         delta_z = 0.0
+        delta_wx = 0.0
+        delta_wy = 0.0
+        delta_wz = 0.0
         gripper_action = 1.0
+
+        translation_unit = float(self.config.translation_unit)
+        rotation_unit = float(self.config.rotation_unit)
 
         # Generate action based on current key states
         for key, val in self.current_pressed.items():
+            if not val:
+                continue
+
             if key == keyboard.Key.up:
-                delta_y = -int(val)
+                delta_y -= translation_unit
             elif key == keyboard.Key.down:
-                delta_y = int(val)
+                delta_y += translation_unit
             elif key == keyboard.Key.left:
-                delta_x = int(val)
+                delta_x += translation_unit
             elif key == keyboard.Key.right:
-                delta_x = -int(val)
-            elif key == keyboard.Key.shift:
-                delta_z = -int(val)
-            elif key == keyboard.Key.shift_r:
-                delta_z = int(val)
-            elif key == keyboard.Key.ctrl_r:
+                delta_x -= translation_unit
+            elif key == "z":
+                delta_z -= translation_unit
+            elif key == "x":
+                delta_z += translation_unit
+            elif key == "w":
+                delta_wx += rotation_unit
+            elif key == "s":
+                delta_wx -= rotation_unit
+            elif key == "a":
+                delta_wy -= rotation_unit
+            elif key == "d":
+                delta_wy += rotation_unit
+            elif key == "q":
+                delta_wz += rotation_unit
+            elif key == "e":
+                delta_wz -= rotation_unit
+            elif key == "c" and self.config.use_gripper:
                 # Gripper actions are expected to be between 0 (close), 1 (stay), 2 (open)
-                gripper_action = int(val) + 1
-            elif key == keyboard.Key.ctrl_l:
-                gripper_action = int(val) - 1
-            elif val:
+                gripper_action = 2.0
+            elif key == "v" and self.config.use_gripper:
+                gripper_action = 0.0
+            else:
                 # If the key is pressed, add it to the misc_keys_queue
                 # this will record key presses that are not part of the delta_x, delta_y, delta_z
                 # this is useful for retrieving other events like interventions for RL, episode success, etc.
                 self.misc_keys_queue.put(key)
-
-        self.current_pressed.clear()
+        # Clear any keys that were released in the meantime
+        self.current_pressed = {key: val for key, val in self.current_pressed.items() if val}
 
         action_dict = {
             "delta_x": delta_x,
             "delta_y": delta_y,
             "delta_z": delta_z,
+            "delta_wx": delta_wx,
+            "delta_wy": delta_wy,
+            "delta_wz": delta_wz,
         }
 
         if self.config.use_gripper:
             action_dict["gripper"] = gripper_action
+        else:
+            action_dict["gripper"] = 0.0
 
         return action_dict
 
@@ -259,11 +311,17 @@ class KeyboardEndEffectorTeleop(KeyboardTeleop):
             keyboard.Key.down,
             keyboard.Key.left,
             keyboard.Key.right,
-            keyboard.Key.shift,
-            keyboard.Key.shift_r,
-            keyboard.Key.ctrl_r,
-            keyboard.Key.ctrl_l,
+            "z",
+            "x",
+            "w",
+            "s",
+            "a",
+            "d",
+            "q",
+            "e",
         ]
+        if self.config.use_gripper:
+            movement_keys.extend(["c", "v"])
         is_intervention = any(self.current_pressed.get(key, False) for key in movement_keys)
 
         # Check for episode control commands from misc_keys_queue

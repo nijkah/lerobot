@@ -19,6 +19,7 @@ from pathlib import Path
 import draccus
 
 
+
 @dataclass(kw_only=True)
 class RobotConfig(draccus.ChoiceRegistry, abc.ABC):
     # Allows to distinguish between different robots of the same type

@@ -28,6 +28,19 @@ class SO101FollowerConfig(RobotConfig):
     port: str
 
     disable_torque_on_disconnect: bool = True
+    urdf_path: str | None = None
+    target_frame_name: str = "gripper_frame_link"
+
+    keyboard_end_effector_step_sizes: dict[str, float] = field(
+        default_factory=lambda: {"x": 0.01, "y": 0.01, "z": 0.01}
+    )
+    keyboard_end_effector_bounds: dict[str, list[float]] = field(
+        default_factory=lambda: {"min": [-0.5, -0.5, 0.0], "max": [0.5, 0.5, 0.5]}
+    )
+    keyboard_end_effector_max_step_m: float = 0.05
+    keyboard_gripper_speed_factor: float = 1.0
+    keyboard_gripper_clip_min: float = 0.0
+    keyboard_gripper_clip_max: float = 100.0
 
     # `max_relative_target` limits the magnitude of the relative positional target vector for safety purposes.
     # Set this to a positive scalar to have the same value for all motors, or a dictionary that maps motor

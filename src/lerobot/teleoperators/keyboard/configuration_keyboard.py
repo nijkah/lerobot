@@ -31,3 +31,8 @@ class KeyboardTeleopConfig(TeleoperatorConfig):
 @dataclass
 class KeyboardEndEffectorTeleopConfig(KeyboardTeleopConfig):
     use_gripper: bool = True
+    position_scale: float = 1.0
+    rotation_scale: float = 1.0
+    noise_threshold: float = 1e-3
+    translation_unit: float = 0.25
+    rotation_unit: float = 0.15
