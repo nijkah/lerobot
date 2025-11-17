@@ -61,11 +61,19 @@ import rerun as rr
 from lerobot.cameras.opencv.configuration_opencv import OpenCVCameraConfig  # noqa: F401
 from lerobot.cameras.realsense.configuration_realsense import RealSenseCameraConfig  # noqa: F401
 from lerobot.configs import parser
+from lerobot.model.kinematics import RobotKinematics
 from lerobot.processor import (
+    MapDeltaActionToRobotActionStep,
     RobotAction,
     RobotObservation,
     RobotProcessorPipeline,
     make_default_processors,
+)
+from lerobot.processor.converters import (
+    observation_to_transition,
+    robot_action_observation_to_transition,
+    transition_to_observation,
+    transition_to_robot_action,
 )
 from lerobot.robots import (  # noqa: F401
     Robot,
@@ -77,6 +85,15 @@ from lerobot.robots import (  # noqa: F401
     so100_follower,
     so101_follower,
 )
+from lerobot.robots.so100_follower.robot_kinematic_processor import (
+    EEBoundsAndSafety,
+    EEReferenceAndDelta,
+    ForwardKinematicsJointsToEEObservation,
+    GripperVelocityToJoint,
+    InverseKinematicsEEToJoints,
+)
+from lerobot.robots.so101_follower.config_so101_follower import SO101FollowerConfig
+from lerobot.robots.so101_follower.so101_follower import SO101Follower
 from lerobot.teleoperators import (  # noqa: F401
     Teleoperator,
     TeleoperatorConfig,
@@ -88,6 +105,7 @@ from lerobot.teleoperators import (  # noqa: F401
     so100_leader,
     so101_leader,
 )
+from lerobot.teleoperators.keyboard.configuration_keyboard import KeyboardEndEffectorTeleopConfig
 from lerobot.utils.import_utils import register_third_party_devices
 from lerobot.utils.robot_utils import busy_wait
 from lerobot.utils.utils import init_logging, move_cursor_up
@@ -106,6 +124,94 @@ class TeleoperateConfig:
     display_data: bool = False
 
 
+def _setup_keyboard_end_effector_pipeline(
+    cfg: TeleoperateConfig,
+    robot: Robot,
+    teleop_action_processor: RobotProcessorPipeline[tuple[RobotAction, RobotObservation], RobotAction],
+    robot_action_processor: RobotProcessorPipeline[tuple[RobotAction, RobotObservation], RobotAction],
+    robot_observation_processor: RobotProcessorPipeline[RobotObservation, RobotObservation],
+) -> tuple[
+    RobotProcessorPipeline[tuple[RobotAction, RobotObservation], RobotAction],
+    RobotProcessorPipeline[tuple[RobotAction, RobotObservation], RobotAction],
+    RobotProcessorPipeline[RobotObservation, RobotObservation],
+    bool,
+]:
+    """Configure processors so a keyboard can drive an SO101 follower in end-effector space."""
+
+    if not isinstance(cfg.teleop, KeyboardEndEffectorTeleopConfig):
+        return teleop_action_processor, robot_action_processor, robot_observation_processor, False
+
+    if not isinstance(cfg.robot, SO101FollowerConfig) or not isinstance(robot, SO101Follower):
+        raise ValueError("keyboard_ee teleoperation currently requires robot.type=so101_follower")
+
+    if cfg.robot.urdf_path is None:
+        raise ValueError(
+            "keyboard_ee teleoperation requires providing --robot.urdf_path with a valid SO-ARM URDF file"
+        )
+
+    motor_names = list(robot.bus.motors.keys())
+    kinematics = RobotKinematics(
+        urdf_path=str(cfg.robot.urdf_path),
+        target_frame_name=cfg.robot.target_frame_name,
+        joint_names=motor_names,
+    )
+
+    step_sizes = dict(cfg.robot.keyboard_end_effector_step_sizes)
+    bounds_cfg = cfg.robot.keyboard_end_effector_bounds
+    if "min" not in bounds_cfg or "max" not in bounds_cfg:
+        raise ValueError("keyboard_end_effector_bounds must define 'min' and 'max' entries")
+    bounds = {
+        "min": list(bounds_cfg["min"]),
+        "max": list(bounds_cfg["max"]),
+    }
+
+    teleop_action_processor = RobotProcessorPipeline[tuple[RobotAction, RobotObservation], RobotAction](
+        steps=[
+            MapDeltaActionToRobotActionStep(
+                position_scale=cfg.teleop.position_scale,
+                rotation_scale=cfg.teleop.rotation_scale,
+                noise_threshold=cfg.teleop.noise_threshold,
+            ),
+            EEReferenceAndDelta(
+                kinematics=kinematics,
+                end_effector_step_sizes=step_sizes,
+                motor_names=motor_names,
+                use_latched_reference=True,
+            ),
+            EEBoundsAndSafety(
+                end_effector_bounds=bounds,
+                max_ee_step_m=cfg.robot.keyboard_end_effector_max_step_m,
+            ),
+            GripperVelocityToJoint(
+                speed_factor=cfg.robot.keyboard_gripper_speed_factor,
+                clip_min=cfg.robot.keyboard_gripper_clip_min,
+                clip_max=cfg.robot.keyboard_gripper_clip_max,
+                discrete_gripper=cfg.teleop.use_gripper,
+            ),
+            InverseKinematicsEEToJoints(
+                kinematics=kinematics,
+                motor_names=motor_names,
+                initial_guess_current_joints=True,
+            ),
+        ],
+        to_transition=robot_action_observation_to_transition,
+        to_output=transition_to_robot_action,
+    )
+    teleop_action_processor.reset()
+    robot_observation_processor = RobotProcessorPipeline[RobotObservation, RobotObservation](
+        steps=[
+            ForwardKinematicsJointsToEEObservation(
+                kinematics=kinematics,
+                motor_names=motor_names,
+            )
+        ],
+        to_transition=observation_to_transition,
+        to_output=transition_to_observation,
+    )
+    robot_observation_processor.reset()
+    return teleop_action_processor, robot_action_processor, robot_observation_processor, True
+
+
 def teleop_loop(
     teleop: Teleoperator,
     robot: Robot,
@@ -115,6 +221,7 @@ def teleop_loop(
     robot_observation_processor: RobotProcessorPipeline[RobotObservation, RobotObservation],
     display_data: bool = False,
     duration: float | None = None,
+    keyboard_ee_active: bool = False,
 ):
     """
     This function continuously reads actions from a teleoperation device, processes them through optional
@@ -130,6 +237,7 @@ def teleop_loop(
         teleop_action_processor: An optional pipeline to process raw actions from the teleoperator.
         robot_action_processor: An optional pipeline to process actions before they are sent to the robot.
         robot_observation_processor: An optional pipeline to process raw observations from the robot.
+        keyboard_ee_active: When True, ensures keyboard end-effector commands include required fields.
     """
 
     display_len = max(len(key) for key in robot.action_features)
@@ -146,6 +254,19 @@ def teleop_loop(
 
         # Get teleop action
         raw_action = teleop.get_action()
+
+        if keyboard_ee_active:
+            raw_action = {} if raw_action is None else dict(raw_action)
+            raw_action.setdefault("delta_x", 0.0)
+            raw_action.setdefault("delta_y", 0.0)
+            raw_action.setdefault("delta_z", 0.0)
+            raw_action.setdefault("delta_wx", 0.0)
+            raw_action.setdefault("delta_wy", 0.0)
+            raw_action.setdefault("delta_wz", 0.0)
+            raw_action.setdefault("gripper", 0.0)
+            for key in ("delta_x", "delta_y", "delta_z", "delta_wx", "delta_wy", "delta_wz", "gripper"):
+                value = raw_action.get(key)
+                raw_action[key] = float(value) if value is not None else 0.0
 
         # Process teleop action through pipeline
         teleop_action = teleop_action_processor((raw_action, obs))
@@ -165,17 +286,21 @@ def teleop_loop(
                 action=teleop_action,
             )
 
-            print("\n" + "-" * (display_len + 10))
-            print(f"{'NAME':<{display_len}} | {'NORM':>7}")
-            # Display the final robot action that was sent
-            for motor, value in robot_action_to_send.items():
-                print(f"{motor:<{display_len}} | {value:>7.2f}")
-            move_cursor_up(len(robot_action_to_send) + 5)
+            ee_keys = ("ee.x", "ee.y", "ee.z", "ee.wx", "ee.wy", "ee.wz")
+            if all(k in obs_transition for k in ee_keys):
+                pos = (obs_transition["ee.x"], obs_transition["ee.y"], obs_transition["ee.z"])
+                rot = (obs_transition["ee.wx"], obs_transition["ee.wy"], obs_transition["ee.wz"])
+                print(
+                    f"EE pos [m]: ({pos[0]: .3f}, {pos[1]: .3f}, {pos[2]: .3f}) | "
+                    f"rotvec [rad]: ({rot[0]: .3f}, {rot[1]: .3f}, {rot[2]: .3f})"
+                )
+                move_cursor_up(1)
 
         dt_s = time.perf_counter() - loop_start
         busy_wait(1 / fps - dt_s)
         loop_s = time.perf_counter() - loop_start
-        print(f"\ntime: {loop_s * 1e3:.2f}ms ({1 / loop_s:.0f} Hz)")
+        # TODO: delete TODOl
+        # print(f"\ntime: {loop_s * 1e3:.2f}ms ({1 / loop_s:.0f} Hz)")
 
         if duration is not None and time.perf_counter() - start >= duration:
             return
@@ -192,6 +317,19 @@ def teleoperate(cfg: TeleoperateConfig):
     robot = make_robot_from_config(cfg.robot)
     teleop_action_processor, robot_action_processor, robot_observation_processor = make_default_processors()
 
+    (
+        teleop_action_processor,
+        robot_action_processor,
+        robot_observation_processor,
+        keyboard_ee_active,
+    ) = _setup_keyboard_end_effector_pipeline(
+        cfg,
+        robot,
+        teleop_action_processor,
+        robot_action_processor,
+        robot_observation_processor,
+    )
+
     teleop.connect()
     robot.connect()
 
@@ -205,6 +343,7 @@ def teleoperate(cfg: TeleoperateConfig):
             teleop_action_processor=teleop_action_processor,
             robot_action_processor=robot_action_processor,
             robot_observation_processor=robot_observation_processor,
+            keyboard_ee_active=keyboard_ee_active,
         )
     except KeyboardInterrupt:
         pass
