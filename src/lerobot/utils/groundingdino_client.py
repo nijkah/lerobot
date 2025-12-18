@@ -25,6 +25,7 @@ class GroundingDINODetection:
     bbox: np.ndarray  # [x1, y1, x2, y2]
     confidence: float
     label: str
+    mask: np.ndarray | None = None  # optional HxW bool mask
 
 
 class GroundingDINOHTTPClient:
@@ -85,6 +86,7 @@ class GroundingDINOHTTPClient:
 
         detections_field = parsed.get("detections", [])
         results: list[GroundingDINODetection] = []
+        frame_shape = frame_bgr.shape[:2]
         for det in detections_field:
             try:
                 bbox = np.array(det["bbox"], dtype=float)
@@ -93,8 +95,47 @@ class GroundingDINOHTTPClient:
             except Exception as exc:  # noqa: BLE001
                 LOG.warning("Skipping malformed detection entry %s: %s", det, exc)
                 continue
-            results.append(GroundingDINODetection(bbox=bbox, confidence=confidence, label=label))
+            mask = self._decode_mask(det, frame_shape)
+            results.append(GroundingDINODetection(bbox=bbox, confidence=confidence, label=label, mask=mask))
 
         # Ensure descending order (server already sorts, but clients rely on this)
         results.sort(key=lambda item: item.confidence, reverse=True)
         return results
+
+    def _decode_mask(self, det: dict[str, Any], frame_shape: tuple[int, int]) -> np.ndarray | None:
+        payload = det.get("mask") or det.get("mask_b64") or det.get("mask_png")
+        if payload is None:
+            return None
+        mask: np.ndarray | None = None
+        if isinstance(payload, str):
+            try:
+                raw = base64.b64decode(payload, validate=True)
+            except Exception as exc:  # noqa: BLE001
+                LOG.warning("Failed to base64 decode mask: %s", exc)
+                return None
+            buffer = np.frombuffer(raw, dtype=np.uint8)
+            mask = cv2.imdecode(buffer, cv2.IMREAD_GRAYSCALE)
+            if mask is None:
+                LOG.warning("cv2.imdecode returned None for mask payload")
+                return None
+        elif isinstance(payload, dict) and {"counts", "size"} <= payload.keys():
+            try:
+                from pycocotools import mask as coco_mask  # type: ignore[import-not-found]
+            except ImportError:
+                LOG.warning("pycocotools not installed; cannot decode RLE mask.")
+                return None
+            try:
+                mask = coco_mask.decode({"counts": payload["counts"], "size": payload["size"]})
+                if mask.ndim == 3:
+                    mask = mask[..., 0]
+            except Exception as exc:  # noqa: BLE001
+                LOG.warning("Failed to decode RLE mask: %s", exc)
+                return None
+        if mask is None:
+            return None
+        if mask.shape != frame_shape:
+            mask = cv2.resize(mask, (frame_shape[1], frame_shape[0]), interpolation=cv2.INTER_NEAREST)
+        if mask.dtype != bool:
+            threshold = 0.5 if mask.max() <= 1 else 127
+            mask = mask > threshold
+        return mask

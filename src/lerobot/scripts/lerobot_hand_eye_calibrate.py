@@ -75,6 +75,20 @@ from lerobot.robots import (  # noqa: F401  (registered robot configs for the pa
     so101_follower,
 )
 
+def set_focus_on_camera(cap: cv2.VideoCapture, focus_value: int = 312) -> None:
+    if not cap.set(cv2.CAP_PROP_FOCUS, 1):
+        logging.warning("Camera driver did not accept CAP_PROP_FOCUS command.")
+    time.sleep(0.15)
+    ret, frame = cap.read()
+    if not ret:
+        logging.warning("Frame grab failed after setting CAP_PROP_FOCUS.")
+
+    if not cap.set(cv2.CAP_PROP_FOCUS, focus_value):
+        logging.warning("Camera driver did not accept CAP_PROP_FOCUS command.")
+    time.sleep(0.15)
+    ret, frame = cap.read()
+    if not ret:
+        raise RuntimeError("Frame grab failed after setting manual focus.")
 
 class CaptureSample(NamedTuple):
     # Transform returned by FK: maps gripper-frame coordinates into the base/world frame (base <- gripper).
@@ -1182,15 +1196,15 @@ def run_hand_eye_calibration(cfg: HandEyeCalibrationConfig):
         "metrics": metrics,
     }
     if solver_result.T_bc is not None:
-        output["base_to_camera"] = _matrix_to_list(solver_result.T_bc)
+        output["camera_to_base"] = _matrix_to_list(solver_result.T_bc)
     if solver_result.T_cb is not None:
-        output["camera_to_base"] = _matrix_to_list(solver_result.T_cb)
+        output["base_to_camera"] = _matrix_to_list(solver_result.T_cb)
     if solver_result.T_gc is not None:
-        output["gripper_to_camera"] = _matrix_to_list(solver_result.T_gc)
+        output["camera_to_gripper"] = _matrix_to_list(solver_result.T_gc)
     if solver_result.T_cg is not None:
-        output["camera_to_gripper"] = _matrix_to_list(solver_result.T_cg)
+        output["gripper_to_camera"] = _matrix_to_list(solver_result.T_cg)
     if solver_result.T_gt is not None:
-        output["gripper_to_tag"] = _matrix_to_list(solver_result.T_gt)
+        output["tag_to_camera"] = _matrix_to_list(solver_result.T_gt)
 
     out_path = Path(cfg.output_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
